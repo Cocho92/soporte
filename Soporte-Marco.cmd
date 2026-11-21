@@ -40,6 +40,7 @@ $DirTmp        = Join-Path $DirDatos 'tmp'
 $Tarea         = 'SoporteMarco'
 $TareaLimpieza = 'SoporteMarco-Limpieza'
 $ReglaFw       = 'SoporteMarco-SSH'
+$ReglaFwPantalla = 'SoporteMarco-RustDesk'
 $PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $TsExe         = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
 $DirSsh        = Join-Path $env:ProgramData 'ssh'
@@ -223,6 +224,14 @@ function Preparar-RustDesk($estado, $info) {
             New-Item -ItemType Directory -Force -Path (Join-Path $dirConfig 'config') | Out-Null
             Set-Content -LiteralPath (Join-Path $dirConfig 'config\RustDesk.toml') -Encoding ASCII -Value "password = '$clave'"
             $info.rustdeskClave = $clave
+            # Acceso directo por IP, para que el video viaje por el tunel y no por los servidores publicos.
+            Set-Content -LiteralPath (Join-Path $dirConfig 'config\RustDesk2.toml') -Encoding ASCII `
+                -Value @('[options]', "direct-server = 'Y'")
+            Remove-NetFirewallRule -Name $ReglaFwPantalla -ErrorAction SilentlyContinue
+            New-NetFirewallRule -Name $ReglaFwPantalla -DisplayName 'Soporte Marco (RustDesk, solo tunel)' `
+                -Direction Inbound -Protocol TCP -LocalPort 21118 -RemoteAddress '100.64.0.0/10' `
+                -Action Allow -Profile Any | Out-Null
+            $info.rustdeskDirecto = $true
         }
         Start-Process -FilePath $exe
     }
@@ -233,6 +242,7 @@ function Preparar-RustDesk($estado, $info) {
 }
 
 function Quitar-RustDesk($estado) {
+    Remove-NetFirewallRule -Name $ReglaFwPantalla -ErrorAction SilentlyContinue
     if (-not $estado.rustdeskIniciado) { return }
     Get-Process -Name rustdesk -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
