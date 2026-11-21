@@ -164,6 +164,22 @@ function Arquitectura {
     return $a
 }
 
+# Un clic dentro de la consola activa el modo "Seleccionar", que congela el script.
+function Desactivar-Seleccion {
+    try {
+        $api = Add-Type -PassThru -Name Consola -Namespace SoporteMarco -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@
+        $entrada = $api::GetStdHandle(-10)
+        [uint32]$modo = 0
+        if ($api::GetConsoleMode($entrada, [ref]$modo)) {
+            [void]$api::SetConsoleMode($entrada, [uint32](($modo -band 0xFFFFFFBF) -bor 0x80))
+        }
+    } catch { }
+}
+
 # ---------------------------------------------------------------- pantalla (RustDesk)
 
 function Preparar-RustDesk($estado, $info) {
@@ -418,6 +434,7 @@ function Programar-Limpieza($cuando) {
 
 function Modo-Sesion {
     $Host.UI.RawUI.WindowTitle = 'Soporte Marco'
+    Desactivar-Seleccion
     if (-not (Es-Admin)) {
         Decir 'Esto tiene que abrirse desde el icono "Soporte Marco" del escritorio.' 'Red'
         Start-Sleep -Seconds 15
