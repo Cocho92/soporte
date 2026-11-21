@@ -183,7 +183,7 @@ function Desactivar-Seleccion {
 
 # ---------------------------------------------------------------- pantalla (RustDesk)
 
-function Preparar-RustDesk($estado, $info) {
+function Preparar-RustDesk($sobre, $estado, $info) {
     if (Get-Process -Name rustdesk -ErrorAction SilentlyContinue) {
         Decir '  RustDesk ya estaba abierto: lo dejo como esta.'
         $info.rustdesk = 'ya estaba abierto'
@@ -220,7 +220,10 @@ function Preparar-RustDesk($estado, $info) {
         $estado.rustdeskIniciado = $true
         Guardar-Estado $estado
         if ($estado.rustdeskConfigCreada) {
-            $clave = -join ((1..10) | ForEach-Object { 'abcdefghijkmnpqrstuvwxyz23456789'[(Get-Random -Maximum 32)] })
+            $clave = [string]$sobre.pantalla
+            if ($clave -notmatch '^[A-Za-z0-9._-]{6,40}$') {
+                $clave = -join ((1..10) | ForEach-Object { 'abcdefghijkmnpqrstuvwxyz23456789'[(Get-Random -Maximum 32)] })
+            }
             New-Item -ItemType Directory -Force -Path (Join-Path $dirConfig 'config') | Out-Null
             Set-Content -LiteralPath (Join-Path $dirConfig 'config\RustDesk.toml') -Encoding ASCII -Value "password = '$clave'"
             $info.rustdeskClave = $clave
@@ -235,6 +238,8 @@ function Preparar-RustDesk($estado, $info) {
         }
         Start-Process -FilePath $exe
     }
+    $estado.rustdeskExe = $exe
+    Guardar-Estado $estado
     Start-Sleep -Seconds 10
     $r = Ejecutar $exe @('--get-id')
     if ($r.Salida -match '\d{6,}') { $info.rustdeskId = $Matches[0] }
@@ -488,7 +493,7 @@ function Modo-Sesion {
     $info = @{ usuario = $env:USERNAME; equipo = $env:COMPUTERNAME; vence = $vence; errores = @() }
     try {
         $pasos = @(
-            @{ Nombre = 'pantalla compartida'; Hacer = { Preparar-RustDesk $estado $info } },
+            @{ Nombre = 'pantalla compartida'; Hacer = { Preparar-RustDesk $sobre $estado $info } },
             @{ Nombre = 'conexion segura'; Hacer = { Preparar-Tunel $sobre $estado $info } },
             @{ Nombre = 'consola remota'; Hacer = { Preparar-Ssh $estado $info } }
         )
@@ -508,7 +513,17 @@ function Modo-Sesion {
         Decir ''
         Decir '  Para terminar antes, cerra esta ventana.' 'Cyan'
 
-        while ((Ahora-Unix) -lt $vence -and -not (Test-Path -LiteralPath $ArchCerrar)) { Start-Sleep -Seconds 3 }
+        while ($true) {
+            # Marco puede extender la sesion desde su notebook: cambia "vence" en el archivo de estado.
+            $actual = Leer-Estado
+            if ($actual -and [int64]$actual.vence -ne $vence) {
+                $vence = [int64]$actual.vence
+                Programar-Limpieza (Hora-Local ($vence + 120))
+                Decir "  Sesion extendida: ahora se cierra sola a las $((Hora-Local $vence).ToString('HH:mm'))." 'Green'
+            }
+            if ((Ahora-Unix) -ge $vence -or (Test-Path -LiteralPath $ArchCerrar)) { break }
+            Start-Sleep -Seconds 3
+        }
         Decir ''
         Decir '  Cerrando la sesion...'
     } finally {
@@ -519,14 +534,34 @@ function Modo-Sesion {
     Start-Sleep -Seconds 8
 }
 
+function Proceso-Vivo([int]$id) {
+    return ($id -gt 0) -and [bool](Get-Process -Id $id -ErrorAction SilentlyContinue)
+}
+
 function Modo-Vigilar {
-    $estado = Leer-Estado
-    if (-not $estado) { return }
-    $espera = [int]([int64]$estado.vence - (Ahora-Unix) + 60)
-    if ($espera -gt 0 -and $IdProceso -gt 0) {
-        try { Wait-Process -Id $IdProceso -Timeout $espera -ErrorAction SilentlyContinue } catch { }
+    # Espera a que la ventana de la sesion se cierre o a que venza el tiempo (que puede extenderse).
+    $fallos = 0
+    while ($true) {
+        $estado = Leer-Estado
+        if (-not $estado) {
+            $fallos++
+            if ($fallos -ge 3) { return }       # ya se limpio
+            Start-Sleep -Seconds 2
+            continue
+        }
+        $fallos = 0
+        if (-not (Proceso-Vivo $IdProceso)) { break }
+        if ((Ahora-Unix) -ge ([int64]$estado.vence + 60)) { break }
+        Start-Sleep -Seconds 10
     }
     if ($IdProceso -gt 0) { Stop-Process -Id $IdProceso -Force -ErrorAction SilentlyContinue }
+    Limpiar
+}
+
+# Lo llama la tarea programada (al vencer y al encender la PC): no limpia una sesion que sigue vigente.
+function Modo-Limpiar {
+    $estado = Leer-Estado
+    if ($estado -and (Proceso-Vivo ([int]$estado.proceso)) -and (Ahora-Unix) -lt [int64]$estado.vence) { return }
     Limpiar
 }
 
@@ -597,6 +632,6 @@ switch ($Modo) {
     'sesion'      { Modo-Sesion }
     'instalar'    { Modo-Instalar }
     'vigilar'     { Modo-Vigilar }
-    'limpiar'     { Limpiar }
+    'limpiar'     { Modo-Limpiar }
     'desinstalar' { Modo-Desinstalar }
 }
