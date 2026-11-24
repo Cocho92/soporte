@@ -6,7 +6,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\soporte-marco-instal
 exit /b
 #>
 param(
-    [ValidateSet('sesion', 'instalar', 'vigilar', 'limpiar', 'desinstalar')]
+    [ValidateSet('sesion', 'instalar', 'vigilar', 'limpiar', 'desinstalar', 'comprobar', 'activarEspera', 'quitarEspera')]
     [string]$Modo = 'sesion',
     [int]$IdProceso = 0
 )
@@ -19,6 +19,8 @@ param(
 #   vigilar     : proceso oculto que limpia si se cierra la ventana.
 #   limpiar     : revierte todo lo que hizo la sesion.
 #   desinstalar : quita el icono, las tareas y los archivos.
+#   comprobar   : modo desatendido. Mira si Marco abrio una sesion y, si es asi, la inicia sola.
+#   activarEspera / quitarEspera : enciende o apaga el modo desatendido en esta PC.
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -36,9 +38,11 @@ $ArchEstado    = Join-Path $DirDatos 'estado.json'
 $ArchInfo      = Join-Path $DirDatos 'info.json'
 $ArchCerrar    = Join-Path $DirDatos 'cerrar'
 $ArchLog       = Join-Path $DirDatos 'ultimo.log'
+$ArchUltima    = Join-Path $DirDatos 'ultima-sesion'
 $DirTmp        = Join-Path $DirDatos 'tmp'
 $Tarea         = 'SoporteMarco'
 $TareaLimpieza = 'SoporteMarco-Limpieza'
+$TareaEspera   = 'SoporteMarco-Espera'
 $ReglaFw       = 'SoporteMarco-SSH'
 $ReglaFwPantalla = 'SoporteMarco-RustDesk'
 $PowerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -92,6 +96,29 @@ function A-Base32([byte[]]$b) {
 function Secreto-Pc {
     $pc = Get-Content -LiteralPath $ArchPc -Raw | ConvertFrom-Json
     return , ([Text.Encoding]::ASCII.GetBytes([string]$pc.secreto))
+}
+
+# Normaliza el codigo tipeado igual que la notebook: minusculas, sin acentos ni la letra ene,
+# palabras separadas por un solo espacio. Asi da igual escribir con espacios, guiones o mayusculas.
+function Canonico([string]$texto) {
+    $d = ($texto.ToLowerInvariant()).Normalize([Text.NormalizationForm]::FormD)
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $d.ToCharArray()) {
+        if ([Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch) -ne [Globalization.UnicodeCategory]::NonSpacingMark) {
+            [void]$sb.Append($ch)
+        }
+    }
+    $palabras = [regex]::Matches($sb.ToString(), '[a-z]+') | ForEach-Object { $_.Value }
+    return ($palabras -join ' ')
+}
+
+# Clave maestra (hex) derivada del codigo con PBKDF2-HMAC-SHA1. Debe coincidir con la notebook.
+function Maestro-De-Codigo([string]$codigo) {
+    $pass = [Text.Encoding]::ASCII.GetBytes((Canonico $codigo))
+    $salt = [Text.Encoding]::ASCII.GetBytes('SoporteMarco/claves/v2')
+    $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($pass, $salt, 300000)
+    try { $bytes = $kdf.GetBytes(32) } finally { $kdf.Dispose() }
+    return (A-Hex $bytes)
 }
 
 # Sobre = base64( iv[16] + AES-256-CBC(json) + HMAC-SHA256(iv+cifrado)[32] )
@@ -178,6 +205,15 @@ function Desactivar-Seleccion {
         if ($api::GetConsoleMode($entrada, [ref]$modo)) {
             [void]$api::SetConsoleMode($entrada, [uint32](($modo -band 0xFFFFFFBF) -bor 0x80))
         }
+    } catch { }
+}
+
+# Evita que la PC se suspenda por inactividad mientras dura la sesion (no cubre cerrar la tapa).
+function Evitar-Suspension {
+    try {
+        $api = Add-Type -PassThru -Name Energia -Namespace SoporteMarco -MemberDefinition `
+            '[DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint estado);'
+        [void]$api::SetThreadExecutionState([uint32]2147483649)    # ES_CONTINUOUS + ES_SYSTEM_REQUIRED
     } catch { }
 }
 
@@ -450,6 +486,7 @@ function Programar-Limpieza($cuando) {
 function Modo-Sesion {
     $Host.UI.RawUI.WindowTitle = 'Soporte Marco'
     Desactivar-Seleccion
+    Evitar-Suspension
     if (-not (Es-Admin)) {
         Decir 'Esto tiene que abrirse desde el icono "Soporte Marco" del escritorio.' 'Red'
         Start-Sleep -Seconds 15
@@ -484,6 +521,7 @@ function Modo-Sesion {
     $vence = [int64]$sobre.vence
     New-Item -ItemType Directory -Force -Path $DirTmp | Out-Null
     Remove-Item -LiteralPath $ArchCerrar -Force -ErrorAction SilentlyContinue
+    Set-Content -LiteralPath $ArchUltima -Value "$($sobre.vence)" -Encoding ASCII
     $estado = @{ vence = $vence; proceso = $PID }
     Guardar-Estado $estado
     Programar-Limpieza (Hora-Local ($vence + 120))
@@ -576,16 +614,19 @@ function Modo-Instalar {
     Decir '  SOPORTE MARCO - instalacion' 'Cyan'
     Decir ''
 
+    Decir '  Escribi las 5 palabras que te paso Marco.' 'Cyan'
+    Decir '  Pueden ir con espacios o guiones; las mayusculas y los acentos dan igual.'
     $codigo = ''
-    while ($codigo -notmatch '^[A-Z2-7]{20}$') {
-        $codigo = ((Read-Host '  Codigo de instalacion (te lo pasa Marco)') -replace '[^A-Za-z0-9]', '').ToUpper()
-        if ($codigo -notmatch '^[A-Z2-7]{20}$') { Decir '  Ese codigo no es valido. Proba de nuevo.' 'Yellow' }
+    while (@((Canonico $codigo) -split '\s+' | Where-Object { $_ }).Count -ne 5) {
+        if ($codigo) { Decir '  Tienen que ser 5 palabras. Proba de nuevo.' 'Yellow' }
+        $codigo = Read-Host '  Codigo'
     }
+    $maestro = Maestro-De-Codigo $codigo
 
     New-Item -ItemType Directory -Force -Path $DirProg, $DirDatos | Out-Null
     [void](Ejecutar 'icacls.exe' @($DirDatos, '/inheritance:r', '/grant', '*S-1-5-32-544:(OI)(CI)F', '/grant', '*S-1-5-18:(OI)(CI)F'))
     Copy-Item -LiteralPath $PSCommandPath -Destination $RutaScript -Force
-    @{ secreto = $codigo } | ConvertTo-Json | Set-Content -LiteralPath $ArchPc -Encoding ASCII
+    @{ secreto = $maestro } | ConvertTo-Json | Set-Content -LiteralPath $ArchPc -Encoding ASCII
 
     $usuario = Usuario-Interactivo
     $actual = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -617,11 +658,41 @@ function Modo-Instalar {
     Read-Host '  Enter para cerrar' | Out-Null
 }
 
+# Modo desatendido: lo corre una tarea como SYSTEM cada pocos minutos. Una sola consulta, sin ventanas.
+function Modo-Comprobar {
+    if (Leer-Estado) { return }                                  # ya hay una sesion en curso
+    if (-not (Test-Path -LiteralPath $ArchPc)) { return }
+    $sobre = Buscar-Sobre (Secreto-Pc)
+    if (-not $sobre) { return }
+    $ultima = ''
+    if (Test-Path -LiteralPath $ArchUltima) { $ultima = (Get-Content -LiteralPath $ArchUltima -Raw).Trim() }
+    if ($ultima -eq "$($sobre.vence)") { return }                # esa sesion ya se abrio y se cerro
+    Start-ScheduledTask -TaskName $Tarea                         # abre la ventana en el escritorio del usuario
+}
+
+function Activar-Espera {
+    $accion = New-ScheduledTaskAction -Execute $PowerShellExe `
+        -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$RutaScript`" -Modo comprobar"
+    $disparo = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5)
+    $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+    $ajustes = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
+        -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $TareaEspera -Action $accion -Trigger $disparo -Principal $principal `
+        -Settings $ajustes -Force | Out-Null
+    Decir 'Modo desatendido ACTIVADO: esta PC consulta cada 5 minutos si Marco abrio una sesion.'
+}
+
+function Quitar-Espera {
+    Unregister-ScheduledTask -TaskName $TareaEspera -Confirm:$false -ErrorAction SilentlyContinue
+    Decir 'Modo desatendido DESACTIVADO: solo se abre una sesion con doble clic en el icono.'
+}
+
 function Modo-Desinstalar {
     if (-not (Es-Admin)) { Decir 'Hay que ejecutarlo como administrador.' 'Red'; return }
     Limpiar
     Unregister-ScheduledTask -TaskName $Tarea -Confirm:$false -ErrorAction SilentlyContinue
     Unregister-ScheduledTask -TaskName $TareaLimpieza -Confirm:$false -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $TareaEspera -Confirm:$false -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Join-Path $env:PUBLIC 'Desktop\Soporte Marco.lnk') -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $DirDatos -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $DirProg -Recurse -Force -ErrorAction SilentlyContinue
@@ -634,4 +705,7 @@ switch ($Modo) {
     'vigilar'     { Modo-Vigilar }
     'limpiar'     { Modo-Limpiar }
     'desinstalar' { Modo-Desinstalar }
+    'comprobar'   { Modo-Comprobar }
+    'activarEspera' { Activar-Espera }
+    'quitarEspera'  { Quitar-Espera }
 }
