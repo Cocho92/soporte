@@ -504,6 +504,9 @@ function Modo-Sesion {
     if (Leer-Estado) { Decir 'Cerrando una sesion anterior que quedo abierta...'; Limpiar }
 
     Ocultar-Consola
+    Add-Type -AssemblyName System.Windows.Forms
+    $ui = $null
+  try {
     $ui = Nueva-Progreso
 
     Avanzar $ui 'Buscando la sesion de soporte...' 8
@@ -590,6 +593,12 @@ function Modo-Sesion {
             } catch { }
         }
     }
+  } catch {
+    if ($ui) { try { $ui.Form.Close() } catch { } }
+    try { [void][Windows.Forms.MessageBox]::Show(
+        "El soporte no pudo arrancar:" + [Environment]::NewLine + [Environment]::NewLine + $_.Exception.Message,
+        'Soporte Marco', 'OK', 'Error') } catch { }
+  }
 }
 
 function Proceso-Vivo([int]$id) {
