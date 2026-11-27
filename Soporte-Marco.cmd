@@ -502,20 +502,27 @@ function Modo-Sesion {
 
     if (Leer-Estado) { Decir 'Cerrando una sesion anterior que quedo abierta...'; Limpiar }
 
-    Decir ''
-    Decir '  SOPORTE MARCO' 'Cyan'
-    Decir '  Buscando la sesion de soporte...'
+    Ocultar-Consola
+    $ui = Nueva-Progreso
+
+    Avanzar $ui 'Buscando la sesion de soporte...' 8
     $secreto = Secreto-Pc
     $sobre = $null
     $limite = (Get-Date).AddMinutes(5)
-    while (-not $sobre -and (Get-Date) -lt $limite) {
+    while (-not $sobre -and (Get-Date) -lt $limite -and -not $ui.Cerrado) {
         $sobre = Buscar-Sobre $secreto
-        if (-not $sobre) { Start-Sleep -Seconds 10 }
+        if (-not $sobre) {
+            for ($i = 0; $i -lt 20 -and -not $ui.Cerrado; $i++) {
+                [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 500
+            }
+        }
     }
+    if ($ui.Cerrado) { return }
     if (-not $sobre) {
-        Decir ''
-        Decir '  No hay una sesion de soporte abierta. Llama a Marco.' 'Yellow'
-        Start-Sleep -Seconds 20
+        try { $ui.Form.Close() } catch { }
+        [void][Windows.Forms.MessageBox]::Show(
+            'No hay una sesion de soporte abierta todavia. Llama a Marco y volve a abrir el icono.',
+            'Soporte Marco', 'OK', 'Information')
         return
     }
 
@@ -532,45 +539,42 @@ function Modo-Sesion {
     $info = @{ usuario = $env:USERNAME; equipo = $env:COMPUTERNAME; vence = $vence; errores = @() }
     try {
         $pasos = @(
-            @{ Nombre = 'pantalla compartida'; Hacer = { Preparar-RustDesk $sobre $estado $info } },
-            @{ Nombre = 'conexion segura'; Hacer = { Preparar-Tunel $sobre $estado $info } },
-            @{ Nombre = 'consola remota'; Hacer = { Preparar-Ssh $estado $info } }
+            @{ Nombre = 'Preparando la pantalla compartida...'; Pct = 25; Hacer = { Preparar-RustDesk $sobre $estado $info } },
+            @{ Nombre = 'Armando la conexion segura (puede tardar un momento)...'; Pct = 55; Hacer = { Preparar-Tunel $sobre $estado $info } },
+            @{ Nombre = 'Activando la consola remota...'; Pct = 85; Hacer = { Preparar-Ssh $estado $info } }
         )
         foreach ($paso in $pasos) {
-            Decir "  Preparando $($paso.Nombre)..."
-            try { & $paso.Hacer } catch {
-                Decir "  No se pudo preparar $($paso.Nombre): $_" 'Yellow'
-                $info.errores += "$($paso.Nombre): $_"
-            }
+            Avanzar $ui $paso.Nombre $paso.Pct
+            try { & $paso.Hacer } catch { $info.errores += "$($paso.Nombre): $_" }
             $info | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ArchInfo -Encoding UTF8
         }
 
-        Decir ''
-        Decir '  Sesion de soporte ACTIVA.' 'Green'
-        Decir "  Se cierra sola a las $((Hora-Local $vence).ToString('HH:mm'))."
-        if ($info.rustdeskId) { Decir "  RustDesk  ID: $($info.rustdeskId)   Clave: $($info.rustdeskClave)" }
-        Decir ''
-        Decir '  Para terminar antes, cerra esta ventana.' 'Cyan'
+        Avanzar $ui "Conectado. Se cierra sola a las $((Hora-Local $vence).ToString('HH:mm'))." 100
+        if ($ui.Boton) { $ui.Boton.Visible = $true }
 
         while ($true) {
+            [Windows.Forms.Application]::DoEvents()
+            if ($ui.Cerrado) { break }
             # Marco puede extender la sesion desde su notebook: cambia "vence" en el archivo de estado.
             $actual = Leer-Estado
             if ($actual -and [int64]$actual.vence -ne $vence) {
                 $vence = [int64]$actual.vence
                 Programar-Limpieza (Hora-Local ($vence + 120))
-                Decir "  Sesion extendida: ahora se cierra sola a las $((Hora-Local $vence).ToString('HH:mm'))." 'Green'
+                try { $ui.Estado.Text = "Conectado. Se cierra sola a las $((Hora-Local $vence).ToString('HH:mm'))." } catch { }
             }
             if ((Ahora-Unix) -ge $vence -or (Test-Path -LiteralPath $ArchCerrar)) { break }
-            Start-Sleep -Seconds 3
+            Start-Sleep -Milliseconds 500
         }
-        Decir ''
-        Decir '  Cerrando la sesion...'
     } finally {
         Limpiar
         try { Stop-Transcript | Out-Null } catch { }
+        if (-not $ui.Cerrado) {
+            if ($ui.Boton) { $ui.Boton.Visible = $false }
+            Avanzar $ui 'Sesion cerrada. Ya no hay acceso remoto a esta PC.' 100
+            Start-Sleep -Seconds 3
+            try { $ui.Form.Close() } catch { }
+        }
     }
-    Decir '  Sesion cerrada. Ya no hay acceso remoto a esta PC.' 'Green'
-    Start-Sleep -Seconds 8
 }
 
 function Proceso-Vivo([int]$id) {
@@ -611,6 +615,71 @@ function Ocultar-Consola {
     $api = Add-Type -PassThru -Name VentanaConsola -Namespace SoporteMarco -MemberDefinition $firma
     $h = $api::GetConsoleWindow()
     if ($h -ne [IntPtr]::Zero) { [void]$api::ShowWindow($h, 0) }   # 0 = SW_HIDE
+}
+
+# Ventana con barra de progreso para la sesion. Devuelve un hash con el form y sus controles.
+function Nueva-Progreso {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $azul = [Drawing.Color]::FromArgb(11, 107, 203)
+    $ui = @{ Cerrado = $false }
+
+    $f = New-Object Windows.Forms.Form
+    $f.Text = 'Soporte Marco'
+    $f.ClientSize = New-Object Drawing.Size(460, 210)
+    $f.StartPosition = 'CenterScreen'
+    $f.FormBorderStyle = 'FixedDialog'
+    $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.TopMost = $true
+    $f.BackColor = [Drawing.Color]::White
+    $f.Font = New-Object Drawing.Font('Segoe UI', 11)
+
+    $titulo = New-Object Windows.Forms.Label
+    $titulo.Text = 'Soporte Marco'
+    $titulo.Font = New-Object Drawing.Font('Segoe UI', 18, [Drawing.FontStyle]::Bold)
+    $titulo.ForeColor = $azul
+    $titulo.AutoSize = $true
+    $titulo.Location = New-Object Drawing.Point(24, 18)
+    $f.Controls.Add($titulo)
+
+    $estado = New-Object Windows.Forms.Label
+    $estado.AutoSize = $false
+    $estado.Size = New-Object Drawing.Size(410, 46)
+    $estado.Location = New-Object Drawing.Point(26, 64)
+    $f.Controls.Add($estado)
+
+    $barra = New-Object Windows.Forms.ProgressBar
+    $barra.Location = New-Object Drawing.Point(26, 116)
+    $barra.Size = New-Object Drawing.Size(408, 24)
+    $barra.Minimum = 0; $barra.Maximum = 100; $barra.Value = 0
+    $f.Controls.Add($barra)
+
+    $boton = New-Object Windows.Forms.Button
+    $boton.Text = 'Terminar'
+    $boton.Size = New-Object Drawing.Size(120, 36)
+    $boton.Location = New-Object Drawing.Point(314, 158)
+    $boton.FlatStyle = 'Flat'
+    $boton.FlatAppearance.BorderSize = 0
+    $boton.BackColor = $azul
+    $boton.ForeColor = [Drawing.Color]::White
+    $boton.Visible = $false
+    $f.Controls.Add($boton)
+
+    $ui.Form = $f; $ui.Estado = $estado; $ui.Barra = $barra; $ui.Boton = $boton
+    $boton.Add_Click({ $f.Close() }.GetNewClosure())
+    $f.Add_FormClosed({ $ui.Cerrado = $true }.GetNewClosure())
+    $f.Show(); [void]$f.Activate()
+    [Windows.Forms.Application]::DoEvents()
+    return $ui
+}
+
+# Actualiza el texto y la barra, y deja que la ventana se refresque.
+function Avanzar($ui, [string]$texto, [int]$pct) {
+    if (-not $ui -or $ui.Cerrado) { return }
+    try {
+        if ($texto) { $ui.Estado.Text = $texto }
+        if ($pct -ge 0) { $ui.Barra.Value = [Math]::Min(100, [Math]::Max(0, $pct)) }
+        [Windows.Forms.Application]::DoEvents()
+    } catch { }
 }
 
 # Ventana grafica para que la persona escriba las 5 palabras. Devuelve el codigo ya normalizado, o $null.
