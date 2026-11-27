@@ -667,7 +667,9 @@ function Pedir-Codigo-GUI {
     $f.Controls.Add($boton)
     $f.AcceptButton = $boton
 
-    $script:codigoGui = $null
+    # El resultado se guarda en $f.Tag (el mismo objeto dentro y fuera del evento), no en una
+    # variable de script: un controlador de evento no puede escribir confiablemente en el scope de afuera.
+    $f.Tag = $null
     $boton.Add_Click({
         $cn = Canonico $caja.Text
         $ps = @($cn -split ' ' | Where-Object { $_ })
@@ -677,14 +679,15 @@ function Pedir-Codigo-GUI {
             $aviso.Text = "Revisa como se escribe: $($malas -join ', '). Quiza falta o sobra una letra."
             return
         }
-        $script:codigoGui = $cn
+        $f.Tag = $cn
         $f.Close()
     }.GetNewClosure())
 
     [void]$caja.Focus()
     [void]$f.ShowDialog()
+    $cod = $f.Tag
     $f.Dispose()
-    return $script:codigoGui
+    return $cod
 }
 
 function Avisar-Listo {
@@ -702,7 +705,7 @@ function Modo-Instalar {
         return
     }
     Ocultar-Consola
-
+  try {
     $codigo = Pedir-Codigo-GUI
     if (-not $codigo) { return }           # cerro la ventana sin completar
     $maestro = Maestro-De-Codigo $codigo
@@ -736,6 +739,12 @@ function Modo-Instalar {
     $acceso.Save()
 
     Avisar-Listo
+  } catch {
+    Add-Type -AssemblyName System.Windows.Forms
+    [void][Windows.Forms.MessageBox]::Show(
+        "No se pudo completar la instalacion:" + [Environment]::NewLine + [Environment]::NewLine +
+        $_.Exception.Message, 'Soporte Marco', 'OK', 'Error')
+  }
 }
 
 # Modo desatendido: lo corre una tarea como SYSTEM cada pocos minutos. Una sola consulta, sin ventanas.
