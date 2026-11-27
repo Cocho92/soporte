@@ -550,17 +550,17 @@ function Modo-Sesion {
             $info | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ArchInfo -Encoding UTF8
         }
 
-        Avanzar $ui 'Conectado con el soporte.' 100
         try {
-            $ui.Form.TopMost = $false           # ya no molesta: la persona puede seguir trabajando
+            $ui.Barra.Visible = $false          # la conexion termino: la barra desaparece (no queda "clavada")
+            $ui.Form.TopMost = $false            # ya no molesta: la persona puede seguir trabajando
+            $ui.Estado.Text = 'Conectado con el soporte.' + [Environment]::NewLine +
+                              'Podes seguir usando la computadora normalmente.'
             if ($info.rustdeskId) {
-                $ui.Estado.Text = 'Conectado con el soporte. Podes seguir usando la computadora.' +
-                                  [Environment]::NewLine + 'Si Marco te lo pide, pasale este numero:'
+                $ui.LblId.Visible = $true
                 $ui.IdBox.Text = [string]$info.rustdeskId
                 $ui.IdBox.Visible = $true
-            } else {
-                $ui.Estado.Text = 'Conectado con el soporte. Podes seguir usando la computadora.'
             }
+            [Windows.Forms.Application]::DoEvents()
         } catch { }
 
         # El soporte sigue hasta que venza el tiempo o Marco lo cierre; cerrar la ventana no lo corta.
@@ -580,8 +580,11 @@ function Modo-Sesion {
         if (-not $ui.Cerrado) {
             try {
                 $ui.IdBox.Visible = $false
+                $ui.LblId.Visible = $false
                 $ui.Form.WindowState = 'Normal'
-                Avanzar $ui 'La sesion de soporte termino. Ya no hay acceso remoto a esta PC.' 100
+                $ui.Estado.Text = 'La sesion de soporte termino.' + [Environment]::NewLine +
+                                  'Ya no hay acceso remoto a esta PC.'
+                [Windows.Forms.Application]::DoEvents()
                 Start-Sleep -Seconds 4
                 $ui.Form.Close()
             } catch { }
@@ -655,10 +658,10 @@ function Nueva-Progreso {
 
     $f = New-Object Windows.Forms.Form
     $f.Text = 'Soporte Marco'
-    $f.ClientSize = New-Object Drawing.Size(460, 210)
+    $f.ClientSize = New-Object Drawing.Size(460, 256)
     $f.StartPosition = 'CenterScreen'
     $f.FormBorderStyle = 'FixedDialog'
-    $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.TopMost = $true
+    $f.MaximizeBox = $false; $f.MinimizeBox = $true; $f.TopMost = $true   # con boton de minimizar
     $f.BackColor = [Drawing.Color]::White
     $f.Font = New-Object Drawing.Font('Segoe UI', 11)
 
@@ -667,32 +670,39 @@ function Nueva-Progreso {
     $titulo.Font = New-Object Drawing.Font('Segoe UI', 18, [Drawing.FontStyle]::Bold)
     $titulo.ForeColor = $azul
     $titulo.AutoSize = $true
-    $titulo.Location = New-Object Drawing.Point(24, 18)
+    $titulo.Location = New-Object Drawing.Point(24, 16)
     $f.Controls.Add($titulo)
 
     $estado = New-Object Windows.Forms.Label
     $estado.AutoSize = $false
-    $estado.Size = New-Object Drawing.Size(410, 46)
-    $estado.Location = New-Object Drawing.Point(26, 64)
+    $estado.Size = New-Object Drawing.Size(410, 48)
+    $estado.Location = New-Object Drawing.Point(26, 56)
     $f.Controls.Add($estado)
 
     $barra = New-Object Windows.Forms.ProgressBar
-    $barra.Location = New-Object Drawing.Point(26, 116)
-    $barra.Size = New-Object Drawing.Size(408, 24)
+    $barra.Location = New-Object Drawing.Point(26, 110)
+    $barra.Size = New-Object Drawing.Size(408, 22)
     $barra.Minimum = 0; $barra.Maximum = 100; $barra.Value = 0
     $f.Controls.Add($barra)
 
-    # Campo (oculto hasta conectar) con el numero de RustDesk, por si Marco lo pide.
+    # Etiqueta y campo (ocultos hasta conectar) con el numero de RustDesk, por si Marco lo pide.
+    $lblId = New-Object Windows.Forms.Label
+    $lblId.Text = 'Si Marco te lo pide, pasale este numero:'
+    $lblId.AutoSize = $true
+    $lblId.Location = New-Object Drawing.Point(26, 148)
+    $lblId.Visible = $false
+    $f.Controls.Add($lblId)
+
     $idbox = New-Object Windows.Forms.TextBox
     $idbox.ReadOnly = $true
-    $idbox.Location = New-Object Drawing.Point(26, 150)
-    $idbox.Size = New-Object Drawing.Size(408, 28)
-    $idbox.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
+    $idbox.Location = New-Object Drawing.Point(26, 176)
+    $idbox.Size = New-Object Drawing.Size(408, 34)
+    $idbox.Font = New-Object Drawing.Font('Segoe UI', 15, [Drawing.FontStyle]::Bold)
     $idbox.TextAlign = 'Center'
     $idbox.Visible = $false
     $f.Controls.Add($idbox)
 
-    $ui.Form = $f; $ui.Estado = $estado; $ui.Barra = $barra; $ui.IdBox = $idbox
+    $ui.Form = $f; $ui.Estado = $estado; $ui.Barra = $barra; $ui.LblId = $lblId; $ui.IdBox = $idbox
     # Cerrar la ventana NO corta la sesion: solo registra que se cerro (el soporte sigue hasta que Marco cierre).
     $f.Add_FormClosed({ $ui.Cerrado = $true }.GetNewClosure())
     $f.Show(); [void]$f.Activate()
