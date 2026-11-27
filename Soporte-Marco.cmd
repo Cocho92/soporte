@@ -278,6 +278,7 @@ function Preparar-RustDesk($sobre, $estado, $info) {
     $estado.rustdeskExe = $exe
     Guardar-Estado $estado
     Start-Sleep -Seconds 10
+    Minimizar-Proceso 'rustdesk'          # que no quede su ventana abierta molestando
     $r = Ejecutar $exe @('--get-id')
     if ($r.Salida -match '\d{6,}') { $info.rustdeskId = $Matches[0] }
     $info.rustdesk = 'abierto'
@@ -549,18 +550,26 @@ function Modo-Sesion {
             $info | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ArchInfo -Encoding UTF8
         }
 
-        Avanzar $ui "Conectado. Se cierra sola a las $((Hora-Local $vence).ToString('HH:mm'))." 100
-        if ($ui.Boton) { $ui.Boton.Visible = $true }
+        Avanzar $ui 'Conectado con el soporte.' 100
+        try {
+            $ui.Form.TopMost = $false           # ya no molesta: la persona puede seguir trabajando
+            if ($info.rustdeskId) {
+                $ui.Estado.Text = 'Conectado con el soporte. Podes seguir usando la computadora.' +
+                                  [Environment]::NewLine + 'Si Marco te lo pide, pasale este numero:'
+                $ui.IdBox.Text = [string]$info.rustdeskId
+                $ui.IdBox.Visible = $true
+            } else {
+                $ui.Estado.Text = 'Conectado con el soporte. Podes seguir usando la computadora.'
+            }
+        } catch { }
 
+        # El soporte sigue hasta que venza el tiempo o Marco lo cierre; cerrar la ventana no lo corta.
         while ($true) {
-            [Windows.Forms.Application]::DoEvents()
-            if ($ui.Cerrado) { break }
-            # Marco puede extender la sesion desde su notebook: cambia "vence" en el archivo de estado.
+            if (-not $ui.Cerrado) { try { [Windows.Forms.Application]::DoEvents() } catch { } }
             $actual = Leer-Estado
             if ($actual -and [int64]$actual.vence -ne $vence) {
                 $vence = [int64]$actual.vence
                 Programar-Limpieza (Hora-Local ($vence + 120))
-                try { $ui.Estado.Text = "Conectado. Se cierra sola a las $((Hora-Local $vence).ToString('HH:mm'))." } catch { }
             }
             if ((Ahora-Unix) -ge $vence -or (Test-Path -LiteralPath $ArchCerrar)) { break }
             Start-Sleep -Milliseconds 500
@@ -569,10 +578,13 @@ function Modo-Sesion {
         Limpiar
         try { Stop-Transcript | Out-Null } catch { }
         if (-not $ui.Cerrado) {
-            if ($ui.Boton) { $ui.Boton.Visible = $false }
-            Avanzar $ui 'Sesion cerrada. Ya no hay acceso remoto a esta PC.' 100
-            Start-Sleep -Seconds 3
-            try { $ui.Form.Close() } catch { }
+            try {
+                $ui.IdBox.Visible = $false
+                $ui.Form.WindowState = 'Normal'
+                Avanzar $ui 'La sesion de soporte termino. Ya no hay acceso remoto a esta PC.' 100
+                Start-Sleep -Seconds 4
+                $ui.Form.Close()
+            } catch { }
         }
     }
 }
@@ -608,13 +620,30 @@ function Modo-Limpiar {
     Limpiar
 }
 
-# Oculta la ventana negra de consola (en la instalacion se ve la ventana linda en su lugar).
+# API de ventanas de Windows (se declara una sola vez aunque se llame varias veces).
+function Api-Ventanas {
+    if (-not ('SoporteMarco.ApiVentanas' -as [type])) {
+        $firma = '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();' +
+                 '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);'
+        Add-Type -Name ApiVentanas -Namespace SoporteMarco -MemberDefinition $firma | Out-Null
+    }
+    return [SoporteMarco.ApiVentanas]
+}
+
+# Oculta la ventana negra de consola (en su lugar se ve la ventana linda).
 function Ocultar-Consola {
-    $firma = '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();' +
-             '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);'
-    $api = Add-Type -PassThru -Name VentanaConsola -Namespace SoporteMarco -MemberDefinition $firma
-    $h = $api::GetConsoleWindow()
-    if ($h -ne [IntPtr]::Zero) { [void]$api::ShowWindow($h, 0) }   # 0 = SW_HIDE
+    $h = (Api-Ventanas)::GetConsoleWindow()
+    if ($h -ne [IntPtr]::Zero) { [void](Api-Ventanas)::ShowWindow($h, 0) }   # 0 = SW_HIDE
+}
+
+# Minimiza la ventana de un programa (ej. RustDesk) para que no moleste a la persona.
+function Minimizar-Proceso([string]$nombre) {
+    for ($i = 0; $i -lt 16; $i++) {
+        $p = Get-Process -Name $nombre -ErrorAction SilentlyContinue |
+             Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+        if ($p) { [void](Api-Ventanas)::ShowWindow($p.MainWindowHandle, 6); return }   # 6 = SW_MINIMIZE
+        Start-Sleep -Milliseconds 500
+    }
 }
 
 # Ventana con barra de progreso para la sesion. Devuelve un hash con el form y sus controles.
@@ -653,19 +682,18 @@ function Nueva-Progreso {
     $barra.Minimum = 0; $barra.Maximum = 100; $barra.Value = 0
     $f.Controls.Add($barra)
 
-    $boton = New-Object Windows.Forms.Button
-    $boton.Text = 'Terminar'
-    $boton.Size = New-Object Drawing.Size(120, 36)
-    $boton.Location = New-Object Drawing.Point(314, 158)
-    $boton.FlatStyle = 'Flat'
-    $boton.FlatAppearance.BorderSize = 0
-    $boton.BackColor = $azul
-    $boton.ForeColor = [Drawing.Color]::White
-    $boton.Visible = $false
-    $f.Controls.Add($boton)
+    # Campo (oculto hasta conectar) con el numero de RustDesk, por si Marco lo pide.
+    $idbox = New-Object Windows.Forms.TextBox
+    $idbox.ReadOnly = $true
+    $idbox.Location = New-Object Drawing.Point(26, 150)
+    $idbox.Size = New-Object Drawing.Size(408, 28)
+    $idbox.Font = New-Object Drawing.Font('Segoe UI', 13, [Drawing.FontStyle]::Bold)
+    $idbox.TextAlign = 'Center'
+    $idbox.Visible = $false
+    $f.Controls.Add($idbox)
 
-    $ui.Form = $f; $ui.Estado = $estado; $ui.Barra = $barra; $ui.Boton = $boton
-    $boton.Add_Click({ $f.Close() }.GetNewClosure())
+    $ui.Form = $f; $ui.Estado = $estado; $ui.Barra = $barra; $ui.IdBox = $idbox
+    # Cerrar la ventana NO corta la sesion: solo registra que se cerro (el soporte sigue hasta que Marco cierre).
     $f.Add_FormClosed({ $ui.Cerrado = $true }.GetNewClosure())
     $f.Show(); [void]$f.Activate()
     [Windows.Forms.Application]::DoEvents()
