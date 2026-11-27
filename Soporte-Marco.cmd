@@ -29,6 +29,7 @@ $ProgressPreference = 'SilentlyContinue'
 $Buzon        = 'https://api.github.com/repos/Cocho92/soporte/contents/s'
 $ClavePublica = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICFjzEzTLqUAgHl8P5IpFY7DivxIDlOba4EK5wZU2QBY soporte-claude'
 $MarcaClave   = 'soporte-claude'
+$Palabras     = 'abeja abril abuelo aceite acelga agua aguila aire albanil alfombra almeja almohada amarillo amigo anana anteojo apio arana arbol arco arcoiris arena armario arpa arroyo arroz arveja asado auto avena avion avispa ayer azucar azul babosa balcon balde ballena banana banco bandeja barco barro batata bateria batidor baul beige bermuda bici birome bizcocho blanco boca bolsillo bombero bosque bota bote botella boton brazo budin bufanda buho burro buzo caballo cabeza cabra cadera cafetera cajon calamar calcetin caldo calefon calle cama camaron camello camion camisa campera canario canasto candado cangrejo cara caracol carpeta carro cartera cartero casa casco catre cebolla cebra ceja celeste cerdo cereal cereza cerro cesta chaleco chaucha choclo chofer chorizo cielo cierre ciervo ciguena cintura cinturon ciruela clavo cochera cocina cocinero coco codo cofre cohete colador colcha colina comoda compas condor conejo copa corbata cordero cortina cuaderno cuadro cuchara cucharon cuchillo cuello cuervo cuna damasco dedo delfin diente dorado dulce durazno embudo empanada ensalada escalera escoba escuadra escuela espalda espejo espiga espinaca estante estrella estufa falda faro fideo flan flauta flor florero foca fosforo frasco frazada freezer frente frutilla fuego fuente galleta gallina gallo ganso garage garbanzo gasista gato globo goma gorila gorra gorrion granizo granja grillo gris guante guiso guitarra gusano halcon harina heladera helado hermano herrero higo hija hijo hoja hombro hora hormiga horno hospital huevo iglesia iguana invierno isla jabali jamon jardin jarra jarron jilguero jirafa juez kiwi labio lagarto lago laguna lampara lancha langosta lapiz lata leche lechon lechuga lechuza lengua lenteja leon libro liebre limon linterna llama llanura llave llavero lluvia lobo loro luna lunes maceta madre maestro manana manga manguera mano manta manteca mantel manzana mapa mariposa marron martes martillo mayo mecanico media medico medusa mejilla mejillon melon menton mercado mesa miel milanesa minuto mochila molino mono montana morron mosca moto mozo mula muneca museo naranja nariz negro niebla nieto nieve noche nube ojota olla oreja oruga otono oveja padre pajaro pala paloma palta panadero pantalon pantera papa paraguas pared parque pasillo pasto patin patio pato pava pavo pecho pelota pepino pera perchero perro pesa pestana piano piedra pierna pila pimienta pintor pinza piso pizarra pizza plancha plateado plato playa plaza plomero polenta policia pollera pollo pomelo poroto potro pozo primo profesor puente puerro puerta pulpo puma queso rabano raiz rallador rama rana raqueta raton ravioles rayo regadera regla reloj remera remo repisa roca rocio rodilla rojo ropero rosa sabana saco salame sandalia sandia sapo sarten sastre sello selva semana semilla serrucho silla sillon sobre sobrino sofa soga sombrero sopa subte suegro tacho taladro tallarin talon tambor tarde tarro tarta taxi taza teatro techo tenedor termo ternero tetera tiburon tienda tierra tigre tijera tiza toalla tobillo tomate tornillo torre torta tortuga tractor tren triciclo trompeta tronco trueno tucan vaca valija valle vaso vecino vela velador venado ventana verano verde vereda vestido viento vinagre violeta violin yegua yerno yogur zapallo zapatero zapato zorro' -split ' '    # lista para validar el codigo y evitar errores de tipeo
 
 $DirProg       = Join-Path $env:ProgramFiles 'SoporteMarco'
 $DirDatos      = Join-Path $env:ProgramData 'SoporteMarco'
@@ -603,24 +604,107 @@ function Modo-Limpiar {
     Limpiar
 }
 
+# Oculta la ventana negra de consola (en la instalacion se ve la ventana linda en su lugar).
+function Ocultar-Consola {
+    $firma = '[DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow();' +
+             '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);'
+    $api = Add-Type -PassThru -Name VentanaConsola -Namespace SoporteMarco -MemberDefinition $firma
+    $h = $api::GetConsoleWindow()
+    if ($h -ne [IntPtr]::Zero) { [void]$api::ShowWindow($h, 0) }   # 0 = SW_HIDE
+}
+
+# Ventana grafica para que la persona escriba las 5 palabras. Devuelve el codigo ya normalizado, o $null.
+function Pedir-Codigo-GUI {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    $azul = [Drawing.Color]::FromArgb(11, 107, 203)
+
+    $f = New-Object Windows.Forms.Form
+    $f.Text = 'Soporte Marco'
+    $f.ClientSize = New-Object Drawing.Size(460, 300)
+    $f.StartPosition = 'CenterScreen'
+    $f.FormBorderStyle = 'FixedDialog'
+    $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.TopMost = $true
+    $f.BackColor = [Drawing.Color]::White
+    $f.Font = New-Object Drawing.Font('Segoe UI', 11)
+
+    $titulo = New-Object Windows.Forms.Label
+    $titulo.Text = 'Soporte Marco'
+    $titulo.Font = New-Object Drawing.Font('Segoe UI', 20, [Drawing.FontStyle]::Bold)
+    $titulo.ForeColor = $azul
+    $titulo.AutoSize = $true
+    $titulo.Location = New-Object Drawing.Point(24, 22)
+    $f.Controls.Add($titulo)
+
+    $instr = New-Object Windows.Forms.Label
+    $instr.Text = 'Escribi las 5 palabras que te paso Marco.'
+    $instr.AutoSize = $true
+    $instr.Location = New-Object Drawing.Point(26, 78)
+    $f.Controls.Add($instr)
+
+    $caja = New-Object Windows.Forms.TextBox
+    $caja.Location = New-Object Drawing.Point(28, 112)
+    $caja.Size = New-Object Drawing.Size(404, 32)
+    $caja.Font = New-Object Drawing.Font('Segoe UI', 13)
+    $f.Controls.Add($caja)
+
+    $aviso = New-Object Windows.Forms.Label
+    $aviso.ForeColor = [Drawing.Color]::FromArgb(185, 40, 40)
+    $aviso.AutoSize = $false
+    $aviso.Size = New-Object Drawing.Size(404, 44)
+    $aviso.Location = New-Object Drawing.Point(28, 150)
+    $f.Controls.Add($aviso)
+
+    $boton = New-Object Windows.Forms.Button
+    $boton.Text = 'Conectar'
+    $boton.Size = New-Object Drawing.Size(130, 44)
+    $boton.Location = New-Object Drawing.Point(302, 236)
+    $boton.FlatStyle = 'Flat'
+    $boton.FlatAppearance.BorderSize = 0
+    $boton.BackColor = $azul
+    $boton.ForeColor = [Drawing.Color]::White
+    $boton.Font = New-Object Drawing.Font('Segoe UI', 12, [Drawing.FontStyle]::Bold)
+    $f.Controls.Add($boton)
+    $f.AcceptButton = $boton
+
+    $script:codigoGui = $null
+    $boton.Add_Click({
+        $cn = Canonico $caja.Text
+        $ps = @($cn -split ' ' | Where-Object { $_ })
+        if ($ps.Count -ne 5) { $aviso.Text = 'Tienen que ser 5 palabras. Fijate que no falte ninguna.'; return }
+        $malas = @($ps | Where-Object { $Palabras -notcontains $_ })
+        if ($malas.Count -gt 0) {
+            $aviso.Text = "Revisa como se escribe: $($malas -join ', '). Quiza falta o sobra una letra."
+            return
+        }
+        $script:codigoGui = $cn
+        $f.Close()
+    }.GetNewClosure())
+
+    [void]$caja.Focus()
+    [void]$f.ShowDialog()
+    $f.Dispose()
+    return $script:codigoGui
+}
+
+function Avisar-Listo {
+    Add-Type -AssemblyName System.Windows.Forms
+    [void][Windows.Forms.MessageBox]::Show(
+        "Listo. Quedo el icono Soporte Marco en el escritorio de esta PC." + [Environment]::NewLine +
+        "Cuando Marco te lo pida, abrilo con doble clic.",
+        'Soporte Marco', 'OK', 'Information')
+}
+
 function Modo-Instalar {
     if (-not (Es-Admin)) {
         Start-Process -FilePath $PowerShellExe -Verb RunAs -ArgumentList @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Modo', 'instalar')
         return
     }
-    $Host.UI.RawUI.WindowTitle = 'Soporte Marco - instalacion'
-    Decir ''
-    Decir '  SOPORTE MARCO - instalacion' 'Cyan'
-    Decir ''
+    Ocultar-Consola
 
-    Decir '  Escribi las 5 palabras que te paso Marco.' 'Cyan'
-    Decir '  Pueden ir con espacios o guiones; las mayusculas y los acentos dan igual.'
-    $codigo = ''
-    while (@((Canonico $codigo) -split '\s+' | Where-Object { $_ }).Count -ne 5) {
-        if ($codigo) { Decir '  Tienen que ser 5 palabras. Proba de nuevo.' 'Yellow' }
-        $codigo = Read-Host '  Codigo'
-    }
+    $codigo = Pedir-Codigo-GUI
+    if (-not $codigo) { return }           # cerro la ventana sin completar
     $maestro = Maestro-De-Codigo $codigo
 
     New-Item -ItemType Directory -Force -Path $DirProg, $DirDatos | Out-Null
@@ -651,11 +735,7 @@ function Modo-Instalar {
     $acceso.Description = 'Abrir una sesion de soporte con Marco'
     $acceso.Save()
 
-    Decir ''
-    Decir '  Listo. Quedo el icono "Soporte Marco" en el escritorio.' 'Green'
-    Decir '  Cuando Marco te lo pida, abri ese icono con doble clic.'
-    Decir ''
-    Read-Host '  Enter para cerrar' | Out-Null
+    Avisar-Listo
 }
 
 # Modo desatendido: lo corre una tarea como SYSTEM cada pocos minutos. Una sola consulta, sin ventanas.
